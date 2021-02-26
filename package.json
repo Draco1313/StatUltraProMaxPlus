@@ -1,0 +1,8 @@
+{
+	"name": "statplus",
+	"description": "A module for pinging bedrock edition servers.",
+	"main": "src/index.js",
+	"dependencies": {
+
+	}
+}

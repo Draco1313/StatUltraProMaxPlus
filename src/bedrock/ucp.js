@@ -1,72 +1,102 @@
-const dgram = require("dgram");
-const util = require("../utils/util");
-const bytes = require("../utils/bytes");
+const dgram = require('dgram');
+const {
+	debug,
+	hexToString,
+} = require('../utils/util.js');
+const bytes = require('../utils/bytes');
+const {
+	HEX,
+} = require('../utils/constants.js');
 
-const ucpIdHex = "01";
-const magicHex = "00ffff00fefefefefdfdfdfd12345678";
+/**
+ * Creates & sends a query to the Minecraft server
+ * @param {string} host The ip/domain of the Minecraft server
+ * @param {number} port The port that the Minecraft server is hosted on
+ * @param {?number} timeout The maximum amount of time the server can take to return data, defaults to 6000ms
+ * @returns Promise
+ */
+const query = (host, port, timeout = 6000) => {
+	return new Promise((resolve, reject) => {
+		try {
+			const now = Date.now();
+			const server = dgram.createSocket('udp4');
+			let ok = false;
 
-function sendUcp(host, port, timeout) {
-	var pingStart = Date.now();
-    return new Promise((resolve, reject) => {
-        try{
-		const client = dgram.createSocket("udp4");
-        let ok = false;
+			const timer = setTimeout(() => {
+				server.close();
+				debug(`[DEBUG] => Connection timed out when connecting to ${host}:${port}.`);
+				return reject(`Connection timed out when connecting to ${host}:${port}.`);
+			}, timeout);
+			/**
+			 * Sends a message to the server
+			 * @param {*} message The message to send
+			 * @returns *
+			 */
+			const send = (message) => {
+				debug(`[DEBUG] => Sending packet ${message.toString('hex')} to ${host}:${port}`);
+				return server.send(message, 0, message.length, port, host, (err, bytes) => {
+					debug(`[DEBUG] => Sent packet ${message.toString('hex')} to ${host}:${port}`);
+					if (err) {
+						clearTimeout(timer);
+						server.close();
+						return reject(`Recieved socket error from ${host}:${port}.\n${err}`);
+					}
+					return bytes;
+				});
+			}
 
-        function send(message) {
-            client.send(message, 0, message.length, port, host, (err, bytes) => {
-                if (err) {
-                    reject('Socket Error ' + err.errno)
+			server.on('message', (message) => {
+				const hex = message.toString('hex');
+				debug(`[DEBUG] => Recieved a message from ${host}:${port}.\n${message}\n${hex}`);
+				if (!hex.startsWith('1c')) {
+					reject('Invalid Data Recieved');
 					clearTimeout(timer);
-                    client.close();
-                }
-            });
-        }
-
-        client.on("message", (msg, rinfo) => {
-            const hex = msg.toString("hex");
-            if (!hex.startsWith("1c")) {
-                reject('Invalid Data Recieved');
+					server.close();
+					debug(`[DEBUG] => Recieved an invalid response from ${host}:${port}.\n${hex}`);
+					reject(`Recieved an invalid response from ${host}:${port}.\n${hex}`);
+					return;
+				}
+				const byteLength = Number(hex.substr(66, 4), 16);
+				const data = hex.substr(70, byteLength * 2);
+				const arr = hexToString(data).split(';');
+				const result = {
+					hostname: arr[1],
+					version: arr[3],
+					latency: Date.now() - now,
+					players: {
+						online: arr[4],
+						now: arr[5],
+					},
+				};
 				clearTimeout(timer);
-                client.close();
-                return;
-            }
-            const byteLength = parseInt(hex.substr(66, 4), 16);
-            const data = hex.substr(70, byteLength * 2);
-            var arr = util.hexToString(data).split(";");
-			var json = {
-			hostname: arr[1],
-			version: arr[3],
-			latency: Date.now() - pingStart,
-			players:{online: arr[4], now: arr[5]}}
-			resolve(json)
-            ok = true;
-			clearTimeout(timer);
-            client.close();
-        });
+				ok = true;
+				server.close();
+				return resolve(result);
+			});
 
-        client.on("err", (err) => {
-            reject(err);
-			clearTimeout(timer);
-            client.close();
-        });
-		
-        client.on("close", () => {
-            if (!ok) {
-             reject("Connection Timed Out");   
-            }
-        });
-		
-		var timer = setTimeout(function() { //added by me because it didn't have this because god knows why
-			client.close();
-		}, timeout);
+			server.on('err', (err) => {
+				debug(`[DEBUG] => Recieved error ${err}`);
+				clearTimeout(timer);
+				server.close();
+				return reject(err);
+			});
 
-        const writer = new bytes.ByteWriter();
-        writer.writeHex(ucpIdHex);
-        writer.writeLong(Date.now());
-        writer.writeHex(magicHex);
-        send(writer.toBuffer());
+			server.on('close', () => {
+				debug(`[DEBUG] => Connection to ${host}:${port} was closed.`);
+				if (ok) return;
+				clearTimeout(timer);
+				return reject(`Connection to ${host}:${port} was closed with no result.`);
+			});
+
+			const writer = new bytes.ByteWriter();
+			writer.writeHex(HEX.UCP);
+			writer.writeLong(Date.now());
+			writer.writeHex(HEX.MAGIC);
+			send(writer.toBuffer());
 		}
-		catch(err){reject(err)}
-		});
+		catch (err) {
+			return reject(err);
+		}
+	});
 }
-module.exports = sendUcp;
+module.exports = query;
